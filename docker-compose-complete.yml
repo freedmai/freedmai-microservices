@@ -1,0 +1,146 @@
+version: '3.8'
+
+services:
+  # API Gateway
+  api-gateway:
+    image: 339713159370.dkr.ecr.us-east-1.amazonaws.com/freedmai-api-gateway:latest
+    container_name: freedmai-api-gateway-uat
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=uat
+      - JWT_SECRET=uat-jwt-secret-key-2025
+    volumes:
+      - ./logs/api-gateway:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - freedmai-network
+    depends_on:
+      - auth-service
+      - billing-service
+      - payment-service
+      - user-service
+      - notification-service
+
+  # Auth Service
+  auth-service:
+    image: 339713159370.dkr.ecr.us-east-1.amazonaws.com/freedmai-auth-service:latest
+    container_name: freedmai-auth-service-uat
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=uat
+      - JWT_SECRET=uat-jwt-secret-key-2025
+    volumes:
+      - ./logs/auth-service:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - freedmai-network
+
+  # Billing Service
+  billing-service:
+    image: 339713159370.dkr.ecr.us-east-1.amazonaws.com/freedmai-billing-service:latest
+    container_name: freedmai-billing-service-uat
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=uat
+    volumes:
+      - ./logs/billing-service:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --no-verbose --tries=1 --spider http://localhost:3002/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - freedmai-network
+
+  # Payment Service
+  payment-service:
+    image: 339713159370.dkr.ecr.us-east-1.amazonaws.com/freedmai-payment-service:latest
+    container_name: freedmai-payment-service-uat
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=uat
+    volumes:
+      - ./logs/payment-service:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --no-verbose --tries=1 --spider http://localhost:3003/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - freedmai-network
+
+  # User Service
+  user-service:
+    image: 339713159370.dkr.ecr.us-east-1.amazonaws.com/freedmai-user-service:latest
+    container_name: freedmai-user-service-uat
+    ports:
+      - "3004:3004"
+    environment:
+      - NODE_ENV=uat
+    volumes:
+      - ./logs/user-service:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --no-verbose --tries=1 --spider http://localhost:3004/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - freedmai-network
+
+  # Notification Service
+  notification-service:
+    image: 339713159370.dkr.ecr.us-east-1.amazonaws.com/freedmai-notification-service:latest
+    container_name: freedmai-notification-service-uat
+    ports:
+      - "3005:3005"
+    environment:
+      - NODE_ENV=uat
+    volumes:
+      - ./logs/notification-service:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --no-verbose --tries=1 --spider http://localhost:3005/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - freedmai-network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-uat
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/uat.conf:/etc/nginx/nginx.conf:ro
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+    networks:
+      - freedmai-network
+
+networks:
+  freedmai-network:
+    driver: bridge
+
+volumes:
+  logs:

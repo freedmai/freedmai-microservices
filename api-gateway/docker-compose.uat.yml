@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  api-gateway:
+    image: ${ECR_REGISTRY}/freedmai-api-gateway:latest
+    container_name: freedmai-api-gateway-uat
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=uat
+    env_file:
+      - config/uat.env
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - freedmai-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-uat
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/uat.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+    networks:
+      - freedmai-network
+
+networks:
+  freedmai-network:
+    driver: bridge

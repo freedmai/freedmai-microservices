@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FreedmAI Deployment Dashboard</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f5f5; }
+        .header { background: #2c3e50; color: white; padding: 1rem; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 1.5rem; }
+        .user-info { display: flex; align-items: center; gap: 1rem; }
+        .container { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+        .card { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 2rem; }
+        .card-header { padding: 1rem; border-bottom: 1px solid #eee; font-weight: bold; }
+        .card-body { padding: 1rem; }
+        .services-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+        .service-card { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; }
+        .service-status { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: bold; }
+        .status-healthy { background: #d4edda; color: #155724; }
+        .status-unhealthy { background: #f8d7da; color: #721c24; }
+        .status-running { background: #cce5ff; color: #004085; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-warning { background: #ffc107; color: #212529; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn:hover { opacity: 0.9; }
+        .deployment-form { display: grid; gap: 1rem; max-width: 500px; }
+        .form-group { display: flex; flex-direction: column; gap: 0.5rem; }
+        .form-group label { font-weight: bold; }
+        .form-group input, .form-group select { padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; }
+        .checkbox-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5rem; }
+        .checkbox-item { display: flex; align-items: center; gap: 0.5rem; }
+        .logs { background: #1e1e1e; color: #00ff00; padding: 1rem; border-radius: 4px; font-family: monospace; max-height: 300px; overflow-y: auto; }
+        .deployment-history { max-height: 400px; overflow-y: auto; }
+        .deployment-item { padding: 1rem; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+        .deployment-meta { font-size: 0.9rem; color: #666; }
+        .notification { position: fixed; top: 20px; right: 20px; padding: 1rem; border-radius: 4px; color: white; z-index: 1000; }
+        .notification.success { background: #28a745; }
+        .notification.error { background: #dc3545; }
+        .notification.info { background: #17a2b8; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 FreedmAI Deployment Dashboard</h1>
+        <div class="user-info">
+            <span>👤 <%= user.name %> (<%= user.role %>)</span>
+            <span id="currentTime"></span>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Service Status -->
+        <div class="card">
+            <div class="card-header">
+                📊 Service Status
+                <button class="btn btn-primary" onclick="refreshStatus()" style="float: right;">🔄 Refresh</button>
+            </div>
+            <div class="card-body">
+                <div class="services-grid" id="servicesGrid">
+                    <% services.forEach(service => { %>
+                    <div class="service-card">
+                        <h4><%= service.name %></h4>
+                        <p>Port: <%= service.port %></p>
+                        <span class="service-status status-<%= service.status %>"><%= service.status %></span>
+                        <div style="margin-top: 0.5rem;">
+                            <button class="btn btn-primary" onclick="testService('<%= service.name %>', <%= service.port %>)">🧪 Test</button>
+                            <button class="btn btn-warning" onclick="restartService('<%= service.name %>')">🔄 Restart</button>
+                        </div>
+                    </div>
+                    <% }); %>
+                </div>
+            </div>
+        </div>
+
+        <!-- Deployment Form -->
+        <div class="card">
+            <div class="card-header">🚀 Deploy Services</div>
+            <div class="card-body">
+                <form class="deployment-form" onsubmit="deployServices(event)">
+                    <div class="form-group">
+                        <label>Select Services:</label>
+                        <div class="checkbox-group">
+                            <% services.forEach(service => { %>
+                            <div class="checkbox-item">
+                                <input type="checkbox" id="service-<%= service.name %>" name="services" value="<%= service.name %>">
+                                <label for="service-<%= service.name %>"><%= service.name %></label>
+                            </div>
+                            <% }); %>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="imageTag">Image Tag:</label>
+                        <input type="text" id="imageTag" name="imageTag" value="latest" placeholder="latest">
+                    </div>
+                    <div class="form-group">
+                        <label for="environment">Environment:</label>
+                        <select id="environment" name="environment">
+                            <option value="uat">UAT</option>
+                            <option value="staging">Staging</option>
+                            <option value="production">Production</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-success">🚀 Deploy Selected Services</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Live Logs -->
+        <div class="card">
+            <div class="card-header">📋 Live Deployment Logs</div>
+            <div class="card-body">
+                <div class="logs" id="liveLogs">
+                    Waiting for deployment...
+                </div>
+            </div>
+        </div>
+
+        <!-- Deployment History -->
+        <div class="card">
+            <div class="card-header">📚 Deployment History</div>
+            <div class="card-body">
+                <div class="deployment-history" id="deploymentHistory">
+                    <% deploymentHistory.forEach(deployment => { %>
+                    <div class="deployment-item">
+                        <div>
+                            <strong><%= deployment.id %></strong>
+                            <div class="deployment-meta">
+                                Services: <%= deployment.services.join(', ') %> | 
+                                Status: <span class="service-status status-<%= deployment.status %>"><%= deployment.status %></span> |
+                                Time: <%= new Date(deployment.startTime).toLocaleString() %>
+                            </div>
+                        </div>
+                        <div>
+                            <% if (deployment.status === 'success') { %>
+                            <button class="btn btn-warning" onclick="rollback('<%= deployment.id %>')">↩️ Rollback</button>
+                            <% } %>
+                        </div>
+                    </div>
+                    <% }); %>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        
+        // Update current time
+        function updateTime() {
+            document.getElementById('currentTime').textContent = new Date().toLocaleString();
+        }
+        setInterval(updateTime, 1000);
+        updateTime();
+
+        // Socket event handlers
+        socket.on('deploymentStarted', (deployment) => {
+            showNotification('Deployment started for: ' + deployment.services.join(', '), 'info');
+            document.getElementById('liveLogs').innerHTML = 'Deployment started...\n';
+        });
+
+        socket.on('deploymentCompleted', (deployment) => {
+            const status = deployment.status === 'success' ? 'success' : 'error';
+            showNotification('Deployment ' + deployment.status + ' for: ' + deployment.services.join(', '), status);
+            document.getElementById('liveLogs').innerHTML = deployment.logs.join('\n');
+            refreshHistory();
+            refreshStatus();
+        });
+
+        socket.on('rollbackStarted', (rollback) => {
+            showNotification('Rollback started for deployment: ' + rollback.originalDeployment, 'info');
+        });
+
+        socket.on('rollbackCompleted', (rollback) => {
+            showNotification('Rollback completed successfully', 'success');
+            refreshHistory();
+        });
+
+        // Functions
+        function showNotification(message, type) {
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                document.body.removeChild(notification);
+            }, 5000);
+        }
+
+        async function refreshStatus() {
+            try {
+                const response = await fetch('/api/services/status');
+                const services = await response.json();
+                
+                const grid = document.getElementById('servicesGrid');
+                grid.innerHTML = services.map(service => `
+                    <div class="service-card">
+                        <h4>${service.name}</h4>
+                        <p>Port: ${service.port}</p>
+                        <span class="service-status status-${service.status}">${service.status}</span>
+                        <div style="margin-top: 0.5rem;">
+                            <button class="btn btn-primary" onclick="testService('${service.name}', ${service.port})">🧪 Test</button>
+                            <button class="btn btn-warning" onclick="restartService('${service.name}')">🔄 Restart</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                showNotification('Failed to refresh status', 'error');
+            }
+        }
+
+        async function deployServices(event) {
+            event.preventDefault();
+            
+            const formData = new FormData(event.target);
+            const selectedServices = formData.getAll('services');
+            
+            if (selectedServices.length === 0) {
+                showNotification('Please select at least one service', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/deploy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        services: selectedServices,
+                        imageTag: formData.get('imageTag'),
+                        environment: formData.get('environment')
+                    })
+                });
+
+                const result = await response.json();
+                if (response.ok) {
+                    showNotification('Deployment initiated: ' + result.deploymentId, 'success');
+                } else {
+                    showNotification('Deployment failed: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Failed to start deployment', 'error');
+            }
+        }
+
+        async function rollback(deploymentId) {
+            if (!confirm('Are you sure you want to rollback this deployment?')) return;
+
+            try {
+                const response = await fetch('/api/rollback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ deploymentId })
+                });
+
+                const result = await response.json();
+                if (response.ok) {
+                    showNotification('Rollback initiated: ' + result.rollbackId, 'success');
+                } else {
+                    showNotification('Rollback failed: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showNotification('Failed to start rollback', 'error');
+            }
+        }
+
+        async function refreshHistory() {
+            try {
+                const response = await fetch('/api/deployments');
+                const deployments = await response.json();
+                
+                const historyDiv = document.getElementById('deploymentHistory');
+                historyDiv.innerHTML = deployments.map(deployment => `
+                    <div class="deployment-item">
+                        <div>
+                            <strong>${deployment.id}</strong>
+                            <div class="deployment-meta">
+                                Services: ${deployment.services.join(', ')} | 
+                                Status: <span class="service-status status-${deployment.status}">${deployment.status}</span> |
+                                Time: ${new Date(deployment.startTime).toLocaleString()}
+                            </div>
+                        </div>
+                        <div>
+                            ${deployment.status === 'success' ? `<button class="btn btn-warning" onclick="rollback('${deployment.id}')">↩️ Rollback</button>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                showNotification('Failed to refresh history', 'error');
+            }
+        }
+
+        function testService(serviceName, port) {
+            fetch(`http://localhost:${port}/health`)
+                .then(response => response.json())
+                .then(data => {
+                    showNotification(`${serviceName} test: ${data.status}`, 'success');
+                })
+                .catch(error => {
+                    showNotification(`${serviceName} test failed`, 'error');
+                });
+        }
+
+        function restartService(serviceName) {
+            if (!confirm(`Are you sure you want to restart ${serviceName}?`)) return;
+            
+            fetch('/api/deploy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    services: [serviceName],
+                    imageTag: 'latest',
+                    environment: 'uat'
+                })
+            }).then(() => {
+                showNotification(`Restarting ${serviceName}...`, 'info');
+            });
+        }
+
+        // Auto-refresh status every 30 seconds
+        setInterval(refreshStatus, 30000);
+    </script>
+</body>
+</html>

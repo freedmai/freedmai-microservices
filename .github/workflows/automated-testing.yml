@@ -1,0 +1,283 @@
+name: Automated Testing Suite
+
+on:
+  push:
+    branches: [ main, develop, feature/* ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        service: [api-gateway, auth-service, billing-service, payment-service, user-service, notification-service]
+        node-version: [18, 20]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -d "${{ matrix.service }}" ] && [ -f "${{ matrix.service }}/package.json" ]; then
+            cd ${{ matrix.service }}
+            npm ci
+          fi
+
+      - name: Run unit tests
+        run: |
+          if [ -d "${{ matrix.service }}" ] && [ -f "${{ matrix.service }}/package.json" ]; then
+            cd ${{ matrix.service }}
+            npm test -- --coverage --watchAll=false
+          fi
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ${{ matrix.service }}/coverage/lcov.info
+          flags: ${{ matrix.service }}
+
+  api-tests:
+    name: API Integration Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: freedmai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Start services for testing
+        run: |
+          # Create test environment
+          cp docker-compose-complete.yml docker-compose-test.yml
+          
+          # Start services in background
+          docker-compose -f docker-compose-test.yml up -d --build
+          
+          # Wait for services to be ready
+          sleep 60
+
+      - name: Run API tests
+        run: |
+          # Install testing tools
+          npm install -g newman
+          
+          # Run Postman collection if exists
+          if [ -f "tests/api/freedmai-api-tests.postman_collection.json" ]; then
+            newman run tests/api/freedmai-api-tests.postman_collection.json \
+              --environment tests/api/test-environment.json \
+              --reporters cli,json \
+              --reporter-json-export test-results.json
+          fi
+          
+          # Run custom API tests
+          if [ -f "./test-apis.sh" ]; then
+            chmod +x ./test-apis.sh
+            ./test-apis.sh
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-test-results
+          path: test-results.json
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose -f docker-compose-test.yml down -v
+
+  security-tests:
+    name: Security Testing
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.7.0
+        with:
+          target: 'http://localhost:3000'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+
+  performance-tests:
+    name: Performance Testing
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup services
+        run: |
+          docker-compose -f docker-compose-complete.yml up -d --build
+          sleep 60
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run load tests
+        run: |
+          # Create k6 test script
+          cat > load-test.js << 'EOF'
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+
+          export let options = {
+            stages: [
+              { duration: '2m', target: 10 },
+              { duration: '5m', target: 10 },
+              { duration: '2m', target: 20 },
+              { duration: '5m', target: 20 },
+              { duration: '2m', target: 0 },
+            ],
+          };
+
+          export default function () {
+            // Test health endpoints
+            let response = http.get('http://localhost:3000/health');
+            check(response, {
+              'status is 200': (r) => r.status === 200,
+              'response time < 500ms': (r) => r.timings.duration < 500,
+            });
+
+            // Test API endpoints
+            response = http.get('http://localhost:3000/api/auth/health');
+            check(response, {
+              'auth health is 200': (r) => r.status === 200,
+            });
+
+            sleep(1);
+          }
+          EOF
+          
+          # Run k6 test
+          k6 run load-test.js
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose -f docker-compose-complete.yml down -v
+
+  e2e-tests:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup services
+        run: |
+          docker-compose -f docker-compose-complete.yml up -d --build
+          sleep 60
+
+      - name: Setup Playwright
+        uses: microsoft/playwright-github-action@v1
+
+      - name: Install Playwright
+        run: |
+          npm install -g @playwright/test
+          npx playwright install
+
+      - name: Run E2E tests
+        run: |
+          # Create basic E2E test
+          mkdir -p tests/e2e
+          cat > tests/e2e/basic-flow.spec.js << 'EOF'
+          const { test, expect } = require('@playwright/test');
+
+          test('API Gateway health check', async ({ request }) => {
+            const response = await request.get('http://localhost:3000/health');
+            expect(response.status()).toBe(200);
+            const body = await response.json();
+            expect(body.status).toBe('healthy');
+          });
+
+          test('Auth service login flow', async ({ request }) => {
+            const response = await request.post('http://localhost:3000/api/auth/login', {
+              data: {
+                email: 'admin@freedmai.com',
+                password: 'password'
+              }
+            });
+            expect(response.status()).toBe(200);
+          });
+
+          test('Complete bill payment flow', async ({ request }) => {
+            // Test billing service
+            const billersResponse = await request.get('http://localhost:3000/api/billing/billers');
+            expect(billersResponse.status()).toBe(200);
+
+            // Test payment service
+            const paymentModesResponse = await request.get('http://localhost:3000/api/payment/payment-modes');
+            expect(paymentModesResponse.status()).toBe(200);
+          });
+          EOF
+          
+          # Run Playwright tests
+          npx playwright test tests/e2e/
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-results
+          path: test-results/
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose -f docker-compose-complete.yml down -v

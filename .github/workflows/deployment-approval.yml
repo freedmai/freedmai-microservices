@@ -1,0 +1,353 @@
+name: Deployment Approval & Management
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Deployment action'
+        required: true
+        type: choice
+        options:
+        - deploy
+        - rollback
+        - hotfix
+        - maintenance
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+        - uat
+        - staging
+        - production
+      services:
+        description: 'Services to deploy (comma-separated or "all")'
+        required: true
+        default: 'all'
+      image_tag:
+        description: 'Docker image tag'
+        required: false
+        default: 'latest'
+      reason:
+        description: 'Deployment reason'
+        required: true
+
+jobs:
+  approval-gate:
+    name: Deployment Approval Gate
+    runs-on: ubuntu-latest
+    if: github.event.inputs.environment == 'production'
+    environment: 
+      name: production-approval
+    
+    steps:
+      - name: Deployment approval required
+        run: |
+          echo "🔐 Production deployment requires approval"
+          echo "Action: ${{ github.event.inputs.action }}"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Services: ${{ github.event.inputs.services }}"
+          echo "Reason: ${{ github.event.inputs.reason }}"
+          echo "Requested by: ${{ github.actor }}"
+
+  pre-deployment-checks:
+    name: Pre-deployment Checks
+    runs-on: ubuntu-latest
+    needs: [approval-gate]
+    if: always() && (needs.approval-gate.result == 'success' || github.event.inputs.environment != 'production')
+    
+    outputs:
+      deployment-id: ${{ steps.generate-id.outputs.deployment-id }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate deployment ID
+        id: generate-id
+        run: |
+          DEPLOYMENT_ID="deploy-$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}"
+          echo "deployment-id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+          echo "🆔 Deployment ID: $DEPLOYMENT_ID"
+
+      - name: Validate deployment parameters
+        run: |
+          echo "✅ Validating deployment parameters..."
+          
+          # Validate services
+          VALID_SERVICES="api-gateway,auth-service,billing-service,payment-service,user-service,notification-service"
+          if [ "${{ github.event.inputs.services }}" != "all" ]; then
+            IFS=',' read -ra SERVICES <<< "${{ github.event.inputs.services }}"
+            for service in "${SERVICES[@]}"; do
+              if [[ ",$VALID_SERVICES," != *",$service,"* ]]; then
+                echo "❌ Invalid service: $service"
+                exit 1
+              fi
+            done
+          fi
+          
+          echo "✅ All parameters valid"
+
+      - name: Check service health (current)
+        run: |
+          echo "🏥 Checking current service health..."
+          
+          # This would check current production health
+          if [ "${{ github.event.inputs.environment }}" = "production" ]; then
+            echo "Checking production services..."
+            # curl -f https://api.freedmai.com/health || echo "Production health check failed"
+          else
+            echo "Checking UAT services..."
+            # curl -f http://localhost:3000/health || echo "UAT health check failed"
+          fi
+
+      - name: Create deployment record
+        run: |
+          echo "📝 Creating deployment record..."
+          
+          cat > deployment-record.json << EOF
+          {
+            "deployment_id": "${{ steps.generate-id.outputs.deployment-id }}",
+            "action": "${{ github.event.inputs.action }}",
+            "environment": "${{ github.event.inputs.environment }}",
+            "services": "${{ github.event.inputs.services }}",
+            "image_tag": "${{ github.event.inputs.image_tag }}",
+            "reason": "${{ github.event.inputs.reason }}",
+            "requested_by": "${{ github.actor }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "status": "pending"
+          }
+          EOF
+          
+          echo "Deployment record created:"
+          cat deployment-record.json
+
+      - name: Upload deployment record
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-record-${{ steps.generate-id.outputs.deployment-id }}
+          path: deployment-record.json
+
+  execute-deployment:
+    name: Execute Deployment
+    runs-on: self-hosted
+    needs: [pre-deployment-checks]
+    environment: 
+      name: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download deployment record
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-record-${{ needs.pre-deployment-checks.outputs.deployment-id }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Backup current deployment
+        run: |
+          echo "💾 Creating backup of current deployment..."
+          
+          # Create backup directory
+          BACKUP_DIR="backups/$(date +%Y%m%d-%H%M%S)"
+          mkdir -p $BACKUP_DIR
+          
+          # Backup current docker-compose state
+          if [ -f "docker-compose-complete.yml" ]; then
+            cp docker-compose-complete.yml $BACKUP_DIR/
+          fi
+          
+          # Save current container images
+          docker images --format "table {{.Repository}}:{{.Tag}}" | grep freedmai > $BACKUP_DIR/current-images.txt
+          
+          echo "✅ Backup created in $BACKUP_DIR"
+
+      - name: Execute deployment action
+        run: |
+          ACTION="${{ github.event.inputs.action }}"
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          SERVICES="${{ github.event.inputs.services }}"
+          IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+          
+          echo "🚀 Executing $ACTION for $ENVIRONMENT environment"
+          
+          case $ACTION in
+            "deploy")
+              echo "Deploying services: $SERVICES"
+              
+              # Set environment variables
+              export ECR_REGISTRY=339713159370.dkr.ecr.us-east-1.amazonaws.com
+              export IMAGE_TAG=$IMAGE_TAG
+              
+              # Pull latest images
+              if [ "$SERVICES" = "all" ]; then
+                SERVICES="api-gateway,auth-service,billing-service,payment-service,user-service,notification-service"
+              fi
+              
+              IFS=',' read -ra SERVICE_ARRAY <<< "$SERVICES"
+              for service in "${SERVICE_ARRAY[@]}"; do
+                echo "Pulling $service:$IMAGE_TAG"
+                docker pull $ECR_REGISTRY/freedmai-$service:$IMAGE_TAG
+              done
+              
+              # Deploy with zero-downtime strategy
+              echo "Performing rolling deployment..."
+              for service in "${SERVICE_ARRAY[@]}"; do
+                echo "Deploying $service..."
+                docker-compose -f docker-compose-complete.yml up -d --no-deps $service
+                sleep 10
+                
+                # Health check
+                case $service in
+                  "api-gateway") PORT=3000 ;;
+                  "auth-service") PORT=3001 ;;
+                  "billing-service") PORT=3002 ;;
+                  "payment-service") PORT=3003 ;;
+                  "user-service") PORT=3004 ;;
+                  "notification-service") PORT=3005 ;;
+                esac
+                
+                # Wait for service to be healthy
+                for i in {1..30}; do
+                  if curl -f http://localhost:$PORT/health; then
+                    echo "✅ $service is healthy"
+                    break
+                  fi
+                  echo "Waiting for $service to be healthy... ($i/30)"
+                  sleep 2
+                done
+              done
+              ;;
+              
+            "rollback")
+              echo "Rolling back deployment..."
+              
+              # Find latest backup
+              LATEST_BACKUP=$(ls -t backups/ | head -n1)
+              if [ -n "$LATEST_BACKUP" ]; then
+                echo "Rolling back to: $LATEST_BACKUP"
+                
+                # Restore previous configuration
+                cp backups/$LATEST_BACKUP/docker-compose-complete.yml .
+                
+                # Restart services with previous images
+                docker-compose -f docker-compose-complete.yml down
+                docker-compose -f docker-compose-complete.yml up -d
+              else
+                echo "❌ No backup found for rollback"
+                exit 1
+              fi
+              ;;
+              
+            "hotfix")
+              echo "Applying hotfix..."
+              # Hotfix deployment logic
+              ;;
+              
+            "maintenance")
+              echo "Entering maintenance mode..."
+              # Maintenance mode logic
+              ;;
+          esac
+
+      - name: Post-deployment verification
+        run: |
+          echo "🔍 Running post-deployment verification..."
+          
+          # Wait for all services to stabilize
+          sleep 30
+          
+          # Run health checks
+          SERVICES="${{ github.event.inputs.services }}"
+          if [ "$SERVICES" = "all" ]; then
+            SERVICES="api-gateway,auth-service,billing-service,payment-service,user-service,notification-service"
+          fi
+          
+          IFS=',' read -ra SERVICE_ARRAY <<< "$SERVICES"
+          for service in "${SERVICE_ARRAY[@]}"; do
+            case $service in
+              "api-gateway") PORT=3000 ;;
+              "auth-service") PORT=3001 ;;
+              "billing-service") PORT=3002 ;;
+              "payment-service") PORT=3003 ;;
+              "user-service") PORT=3004 ;;
+              "notification-service") PORT=3005 ;;
+            esac
+            
+            if curl -f http://localhost:$PORT/health; then
+              echo "✅ $service health check passed"
+            else
+              echo "❌ $service health check failed"
+              exit 1
+            fi
+          done
+          
+          # Run smoke tests
+          if [ -f "./test-apis.sh" ]; then
+            echo "Running smoke tests..."
+            chmod +x ./test-apis.sh
+            ./test-apis.sh
+          fi
+
+      - name: Update deployment record
+        run: |
+          # Update deployment record with success status
+          jq '.status = "success" | .completed_at = "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"' deployment-record.json > deployment-record-updated.json
+          mv deployment-record-updated.json deployment-record.json
+          
+          echo "✅ Deployment completed successfully"
+          cat deployment-record.json
+
+      - name: Notify deployment success
+        run: |
+          echo "🎉 Deployment notification"
+          echo "Deployment ID: ${{ needs.pre-deployment-checks.outputs.deployment-id }}"
+          echo "Action: ${{ github.event.inputs.action }}"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Services: ${{ github.event.inputs.services }}"
+          echo "Status: ✅ SUCCESS"
+
+  post-deployment:
+    name: Post-deployment Tasks
+    runs-on: ubuntu-latest
+    needs: [execute-deployment]
+    if: always()
+    
+    steps:
+      - name: Collect deployment metrics
+        run: |
+          echo "📊 Collecting deployment metrics..."
+          
+          # This would collect metrics like:
+          # - Deployment duration
+          # - Service startup times
+          # - Error rates
+          # - Performance metrics
+          
+          echo "Deployment completed at: $(date)"
+
+      - name: Update monitoring dashboards
+        run: |
+          echo "📈 Updating monitoring dashboards..."
+          
+          # This would update Grafana dashboards or other monitoring tools
+          # with the new deployment information
+
+      - name: Archive deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-artifacts-${{ needs.pre-deployment-checks.outputs.deployment-id }}
+          path: |
+            deployment-record.json
+            backups/
+          retention-days: 30

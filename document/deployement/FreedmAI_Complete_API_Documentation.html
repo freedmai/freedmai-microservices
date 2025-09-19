@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>FreedmAI Complete API Documentation</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }
+        .header { background: #2196f3; color: white; padding: 20px; text-align: center; margin-bottom: 30px; }
+        .api-section { background: #f9f9f9; padding: 20px; margin: 20px 0; border-left: 4px solid #2196f3; }
+        .code { background: #2d3748; color: #e2e8f0; padding: 15px; margin: 10px 0; overflow-x: auto; font-family: monospace; }
+        .method { background: #2196f3; color: white; padding: 5px 10px; border-radius: 3px; font-weight: bold; }
+        .table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        .table th, .table td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        .table th { background: #2196f3; color: white; }
+        .logic-step { background: #e8f5e8; padding: 10px; margin: 5px 0; border-left: 3px solid #4caf50; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>FreedmAI Complete API Documentation</h1>
+        <p>Microservices | APIs | Requests | Responses | Logic | MySQL Queries</p>
+        <p><strong>Version 2.0.0</strong> | September 19, 2025</p>
+    </div>
+
+    <h2>🏗️ Microservices Overview</h2>
+    <table class="table">
+        <tr>
+            <th>Service</th>
+            <th>Port</th>
+            <th>Base URL</th>
+            <th>Database Tables</th>
+            <th>Responsibilities</th>
+        </tr>
+        <tr>
+            <td><strong>API Gateway</strong></td>
+            <td>3000</td>
+            <td>http://localhost:3000</td>
+            <td>None (Proxy Only)</td>
+            <td>Request routing, service discovery, health monitoring</td>
+        </tr>
+        <tr>
+            <td><strong>User Service</strong></td>
+            <td>3001</td>
+            <td>http://localhost:3001</td>
+            <td>users, identities, kyc_summary</td>
+            <td>User management, profiles, KYC verification</td>
+        </tr>
+        <tr>
+            <td><strong>OTP Service</strong></td>
+            <td>3007</td>
+            <td>http://localhost:3007</td>
+            <td>otp_attempts, sessions</td>
+            <td>OTP generation/verification, JWT tokens, authentication</td>
+        </tr>
+        <tr>
+            <td><strong>Notification Service</strong></td>
+            <td>3006</td>
+            <td>http://localhost:3006</td>
+            <td>audit_logs</td>
+            <td>SMS, email notifications, delivery tracking</td>
+        </tr>
+    </table>
+
+    <div class="api-section">
+        <h2>🔐 API 1: Send OTP</h2>
+        <p><span class="method">POST</span> <strong>/api/auth/send-otp</strong></p>
+        <p><strong>Microservice:</strong> OTP Service (Port 3007)</p>
+        <p><strong>Gateway URL:</strong> http://localhost:3000/api/auth/send-otp</p>
+
+        <h3>Request</h3>
+        <div class="code">
+{
+  "phone_number": "+919876543210",
+  "purpose": "registration"
+}
+        </div>
+
+        <h3>Response</h3>
+        <div class="code">
+{
+  "success": true,
+  "data": {
+    "verification_id": "550e8400-e29b-41d4-a716-446655440000",
+    "expires_at": "2025-09-19T10:35:00Z",
+    "otp_length": 6,
+    "retry_after": 60
+  },
+  "message": "OTP sent successfully",
+  "timestamp": "2025-09-19T10:30:00Z"
+}
+        </div>
+
+        <h3>Logic Implementation</h3>
+        <div class="logic-step">1. Validate phone number format using regex: /^\+91[6-9]\d{9}$/</div>
+        <div class="logic-step">2. Check rate limiting: Max 3 OTP requests per 5 minutes per phone</div>
+        <div class="logic-step">3. Generate 6-digit random OTP: Math.floor(100000 + Math.random() * 900000)</div>
+        <div class="logic-step">4. Create unique verification_id using UUID v4</div>
+        <div class="logic-step">5. Hash OTP using SHA-256 with salt for secure storage</div>
+        <div class="logic-step">6. Store OTP attempt in database with 5-minute expiry</div>
+        <div class="logic-step">7. Call Notification Service to send SMS</div>
+        <div class="logic-step">8. Return verification_id to client for OTP verification</div>
+
+        <h3>MySQL Queries</h3>
+        <div class="code">
+-- Rate limiting check
+SELECT COUNT(*) as attempt_count 
+FROM otp_attempts 
+WHERE identifier = '+919876543210' 
+AND created_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE);
+
+-- Insert OTP attempt
+INSERT INTO otp_attempts (
+  identifier, 
+  otp_hash, 
+  verification_id, 
+  type, 
+  expires_at, 
+  created_at
+) VALUES (
+  '+919876543210',
+  'sha256_hashed_otp_with_salt',
+  '550e8400-e29b-41d4-a716-446655440000',
+  'mobile_verification',
+  DATE_ADD(NOW(), INTERVAL 5 MINUTE),
+  NOW()
+);
+        </div>
+    </div>
+
+    <div class="api-section">
+        <h2>🔓 API 2: Verify OTP</h2>
+        <p><span class="method">POST</span> <strong>/api/auth/verify-otp</strong></p>
+        <p><strong>Microservice:</strong> OTP Service (Port 3007)</p>
+        <p><strong>Gateway URL:</strong> http://localhost:3000/api/auth/verify-otp</p>
+
+        <h3>Request</h3>
+        <div class="code">
+{
+  "phone_number": "+919876543210",
+  "otp": "123456",
+  "verification_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+        </div>
+
+        <h3>Response</h3>
+        <div class="code">
+{
+  "success": true,
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": {
+      "id": 12345,
+      "phone": "+919876543210",
+      "status": "onboarding",
+      "current_step": "mobile_otp"
+    }
+  },
+  "message": "OTP verified successfully",
+  "timestamp": "2025-09-19T10:30:00Z"
+}
+        </div>
+
+        <h3>Logic Implementation</h3>
+        <div class="logic-step">1. Validate OTP format: 6 digits only</div>
+        <div class="logic-step">2. Retrieve OTP record using verification_id</div>
+        <div class="logic-step">3. Check OTP expiry and verification status</div>
+        <div class="logic-step">4. Hash provided OTP with same salt</div>
+        <div class="logic-step">5. Compare hashes using constant-time comparison (crypto.timingSafeEqual)</div>
+        <div class="logic-step">6. Mark OTP as verified in database</div>
+        <div class="logic-step">7. Create or update user record</div>
+        <div class="logic-step">8. Generate JWT access token (15 min expiry) and refresh token (30 days)</div>
+        <div class="logic-step">9. Create session record with tokens</div>
+        <div class="logic-step">10. Return tokens and user data</div>
+
+        <h3>MySQL Queries</h3>
+        <div class="code">
+-- Verify OTP attempt
+SELECT * FROM otp_attempts 
+WHERE verification_id = '550e8400-e29b-41d4-a716-446655440000'
+AND identifier = '+919876543210'
+AND expires_at > NOW() 
+AND is_verified = FALSE
+AND attempts_count < 5;
+
+-- Mark OTP as verified
+UPDATE otp_attempts 
+SET is_verified = TRUE, 
+    attempts_count = attempts_count + 1 
+WHERE verification_id = '550e8400-e29b-41d4-a716-446655440000';
+
+-- Create or update user
+INSERT INTO users (
+  phone, 
+  status, 
+  current_step, 
+  created_at
+) VALUES (
+  '+919876543210',
+  'onboarding',
+  'mobile_otp',
+  NOW()
+) ON DUPLICATE KEY UPDATE 
+  updated_at = NOW(),
+  current_step = 'mobile_otp';
+
+-- Create session
+INSERT INTO sessions (
+  user_id, 
+  session_token, 
+  access_token_hash, 
+  expires_at, 
+  created_at
+) VALUES (
+  12345,
+  'jwt_refresh_token_string',
+  'sha256_access_token_hash',
+  DATE_ADD(NOW(), INTERVAL 30 DAY),
+  NOW()
+);
+        </div>
+    </div>
+
+    <div class="api-section">
+        <h2>👤 API 3: User Registration</h2>
+        <p><span class="method">POST</span> <strong>/api/users/register</strong></p>
+        <p><strong>Microservice:</strong> User Service (Port 3001)</p>
+        <p><strong>Gateway URL:</strong> http://localhost:3000/api/users/register</p>
+
+        <h3>Request</h3>
+        <div class="code">
+Headers:
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+Content-Type: application/json
+
+Body:
+{
+  "full_name": "John Doe",
+  "email": "john@example.com",
+  "dob": "1990-01-15",
+  "pincode": "110001"
+}
+        </div>
+
+        <h3>Response</h3>
+        <div class="code">
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": 12345,
+      "phone": "+919876543210",
+      "email": "john@example.com",
+      "full_name": "John Doe",
+      "dob": "1990-01-15",
+      "pincode": "110001",
+      "status": "active",
+      "current_step": "profile_confirmation"
+    }
+  },
+  "message": "User registered successfully",
+  "timestamp": "2025-09-19T10:30:00Z"
+}
+        </div>
+
+        <h3>Logic Implementation</h3>
+        <div class="logic-step">1. Verify JWT access token and extract user_id</div>
+        <div class="logic-step">2. Validate email format using regex</div>
+        <div class="logic-step">3. Validate pincode format (6 digits)</div>
+        <div class="logic-step">4. Validate date of birth format</div>
+        <div class="logic-step">5. Update user profile with provided information</div>
+        <div class="logic-step">6. Create identity record for email</div>
+        <div class="logic-step">7. Initialize KYC summary record</div>
+        <div class="logic-step">8. Update user status to 'active' and step to 'profile_confirmation'</div>
+        <div class="logic-step">9. Return updated user profile</div>
+
+        <h3>MySQL Queries</h3>
+        <div class="code">
+-- Update user profile
+UPDATE users SET 
+  full_name = 'John Doe',
+  email = 'john@example.com',
+  dob = '1990-01-15',
+  pincode = '110001',
+  current_step = 'profile_confirmation',
+  status = 'active',
+  updated_at = NOW()
+WHERE id = 12345;
+
+-- Insert email identity
+INSERT INTO identities (
+  user_id, 
+  identity_type, 
+  identity_value, 
+  verification_status, 
+  created_at
+) VALUES (
+  12345, 
+  'email', 
+  'john@example.com', 
+  'pending', 
+  NOW()
+) ON DUPLICATE KEY UPDATE 
+  identity_value = VALUES(identity_value),
+  updated_at = NOW();
+
+-- Initialize KYC summary
+INSERT INTO kyc_summary (
+  user_id, 
+  kyc_status, 
+  verification_level, 
+  created_at
+) VALUES (
+  12345, 
+  'pending', 
+  'basic', 
+  NOW()
+) ON DUPLICATE KEY UPDATE 
+  updated_at = NOW();
+        </div>
+    </div>
+
+    <div class="api-section">
+        <h2>📋 API 4: Get User Profile</h2>
+        <p><span class="method">GET</span> <strong>/api/users/profile</strong></p>
+        <p><strong>Microservice:</strong> User Service (Port 3001)</p>
+        <p><strong>Gateway URL:</strong> http://localhost:3000/api/users/profile</p>
+
+        <h3>Request</h3>
+        <div class="code">
+Headers:
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        </div>
+
+        <h3>Response</h3>
+        <div class="code">
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": 12345,
+      "phone": "+919876543210",
+      "email": "john@example.com",
+      "full_name": "John Doe",
+      "dob": "1990-01-15",
+      "pincode": "110001",
+      "status": "active",
+      "current_step": "profile_confirmation",
+      "kyc_status": "pending",
+      "verification_level": "basic",
+      "identities": [
+        {
+          "type": "email",
+          "value": "john@example.com",
+          "status": "pending"
+        }
+      ]
+    }
+  },
+  "message": "Profile retrieved successfully",
+  "timestamp": "2025-09-19T10:30:00Z"
+}
+        </div>
+
+        <h3>Logic Implementation</h3>
+        <div class="logic-step">1. Verify JWT access token and extract user_id</div>
+        <div class="logic-step">2. Retrieve user profile from database</div>
+        <div class="logic-step">3. Join with KYC summary to get verification status</div>
+        <div class="logic-step">4. Retrieve user identities (email, documents)</div>
+        <div class="logic-step">5. Combine all data into comprehensive profile</div>
+        <div class="logic-step">6. Return complete user profile with KYC status</div>
+
+        <h3>MySQL Queries</h3>
+        <div class="code">
+-- Get user profile with KYC status
+SELECT 
+  u.*,
+  k.kyc_status,
+  k.verification_level,
+  k.completed_at
+FROM users u 
+LEFT JOIN kyc_summary k ON u.id = k.user_id 
+WHERE u.id = 12345;
+
+-- Get user identities
+SELECT 
+  identity_type,
+  identity_value,
+  verification_status,
+  verified_at
+FROM identities 
+WHERE user_id = 12345;
+        </div>
+    </div>
+
+    <div class="api-section">
+        <h2>🔄 API 5: Refresh Token</h2>
+        <p><span class="method">POST</span> <strong>/api/auth/refresh</strong></p>
+        <p><strong>Microservice:</strong> OTP Service (Port 3007)</p>
+        <p><strong>Gateway URL:</strong> http://localhost:3000/api/auth/refresh</p>
+
+        <h3>Request</h3>
+        <div class="code">
+{
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+        </div>
+
+        <h3>Response</h3>
+        <div class="code">
+{
+  "success": true,
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expires_in": 900
+  },
+  "message": "Token refreshed successfully",
+  "timestamp": "2025-09-19T10:30:00Z"
+}
+        </div>
+
+        <h3>Logic Implementation</h3>
+        <div class="logic-step">1. Verify refresh token signature and expiry</div>
+        <div class="logic-step">2. Extract user_id and session_id from token</div>
+        <div class="logic-step">3. Verify session is active in database</div>
+        <div class="logic-step">4. Generate new access token with 15-minute expiry</div>
+        <div class="logic-step">5. Update session with new access token hash</div>
+        <div class="logic-step">6. Return new access token</div>
+
+        <h3>MySQL Queries</h3>
+        <div class="code">
+-- Verify active session
+SELECT * FROM sessions 
+WHERE user_id = 12345 
+AND session_token = 'jwt_refresh_token_string'
+AND is_active = TRUE 
+AND expires_at > NOW();
+
+-- Update session with new access token
+UPDATE sessions 
+SET access_token_hash = 'new_sha256_access_token_hash',
+    updated_at = NOW() 
+WHERE user_id = 12345 
+AND session_token = 'jwt_refresh_token_string';
+        </div>
+    </div>
+
+    <div class="api-section">
+        <h2>📱 API 6: Send SMS Notification</h2>
+        <p><span class="method">POST</span> <strong>/api/notifications/sms</strong></p>
+        <p><strong>Microservice:</strong> Notification Service (Port 3006)</p>
+        <p><strong>Gateway URL:</strong> http://localhost:3000/api/notifications/sms</p>
+
+        <h3>Request</h3>
+        <div class="code">
+{
+  "mobile_number": "+919876543210",
+  "template_type": "otp_verification",
+  "variables": {
+    "otp": "123456",
+    "expiry_minutes": 5
+  }
+}
+        </div>
+
+        <h3>Response</h3>
+        <div class="code">
+{
+  "success": true,
+  "data": {
+    "message_id": "sms_12345_67890",
+    "status": "sent",
+    "mobile_number": "+919876543210"
+  },
+  "message": "SMS sent successfully",
+  "timestamp": "2025-09-19T10:30:00Z"
+}
+        </div>
+
+        <h3>Logic Implementation</h3>
+        <div class="logic-step">1. Validate mobile number format</div>
+        <div class="logic-step">2. Select SMS template based on template_type</div>
+        <div class="logic-step">3. Replace template variables with actual values</div>
+        <div class="logic-step">4. Call SMS gateway API (Twilio/AWS SNS)</div>
+        <div class="logic-step">5. Generate unique message_id for tracking</div>
+        <div class="logic-step">6. Log SMS delivery in audit_logs</div>
+        <div class="logic-step">7. Return message_id and delivery status</div>
+
+        <h3>MySQL Queries</h3>
+        <div class="code">
+-- Log SMS delivery in audit logs
+INSERT INTO audit_logs (
+  user_id, 
+  action, 
+  details, 
+  ip_address, 
+  created_at
+) VALUES (
+  12345,
+  'sms_sent',
+  JSON_OBJECT(
+    'message_id', 'sms_12345_67890',
+    'template_type', 'otp_verification',
+    'mobile_number', '+919876543210',
+    'status', 'sent'
+  ),
+  '192.168.1.100',
+  NOW()
+);
+        </div>
+    </div>
+
+    <div class="api-section">
+        <h2>🏥 API 7: Health Check</h2>
+        <p><span class="method">GET</span> <strong>/health</strong></p>
+        <p><strong>Microservice:</strong> API Gateway (Port 3000)</p>
+        <p><strong>Gateway URL:</strong> http://localhost:3000/health</p>
+
+        <h3>Request</h3>
+        <div class="code">
+GET /health
+        </div>
+
+        <h3>Response</h3>
+        <div class="code">
+{
+  "status": "UP",
+  "service": "FreedmAI API Gateway",
+  "timestamp": "2025-09-19T10:30:00Z",
+  "version": "1.0.0",
+  "services": {
+    "user_service": {
+      "status": "UP",
+      "url": "http://localhost:3001"
+    },
+    "otp_service": {
+      "status": "UP",
+      "url": "http://localhost:3007"
+    },
+    "notification_service": {
+      "status": "UP",
+      "url": "http://localhost:3006"
+    }
+  }
+}
+        </div>
+
+        <h3>Logic Implementation</h3>
+        <div class="logic-step">1. Check API Gateway service status</div>
+        <div class="logic-step">2. Ping each microservice health endpoint</div>
+        <div class="logic-step">3. Collect response status from all services</div>
+        <div class="logic-step">4. Determine overall system health</div>
+        <div class="logic-step">5. Return aggregated health status</div>
+
+        <h3>MySQL Queries</h3>
+        <div class="code">
+-- No direct database queries for health check
+-- Each service checks its own database connection:
+
+-- User Service database check
+SELECT 1 as health_check;
+
+-- OTP Service database check  
+SELECT COUNT(*) as active_sessions 
+FROM sessions 
+WHERE is_active = TRUE AND expires_at > NOW();
+        </div>
+    </div>
+
+    <h2>🗄️ Database Tables Summary</h2>
+    <table class="table">
+        <tr>
+            <th>Table</th>
+            <th>Primary Key</th>
+            <th>Key Columns</th>
+            <th>Purpose</th>
+        </tr>
+        <tr>
+            <td><strong>users</strong></td>
+            <td>id (BIGINT)</td>
+            <td>phone, email, status, current_step</td>
+            <td>User profiles and onboarding status</td>
+        </tr>
+        <tr>
+            <td><strong>sessions</strong></td>
+            <td>id (BIGINT)</td>
+            <td>user_id, session_token, expires_at</td>
+            <td>JWT session management</td>
+        </tr>
+        <tr>
+            <td><strong>otp_attempts</strong></td>
+            <td>id (BIGINT)</td>
+            <td>identifier, verification_id, otp_hash</td>
+            <td>OTP generation and verification</td>
+        </tr>
+        <tr>
+            <td><strong>identities</strong></td>
+            <td>id (BIGINT)</td>
+            <td>user_id, identity_type, identity_value</td>
+            <td>User identity documents</td>
+        </tr>
+        <tr>
+            <td><strong>kyc_summary</strong></td>
+            <td>id (BIGINT)</td>
+            <td>user_id, kyc_status, verification_level</td>
+            <td>KYC verification status</td>
+        </tr>
+        <tr>
+            <td><strong>audit_logs</strong></td>
+            <td>id (BIGINT)</td>
+            <td>user_id, action, details</td>
+            <td>System audit trail</td>
+        </tr>
+    </table>
+
+    <h2>🔒 Security Features</h2>
+    <ul>
+        <li><strong>OTP Security:</strong> SHA-256 hashing, 5-minute expiry, rate limiting (3 per 5 min)</li>
+        <li><strong>JWT Tokens:</strong> 15-minute access tokens, 30-day refresh tokens</li>
+        <li><strong>Session Management:</strong> Secure session binding with token rotation</li>
+        <li><strong>Input Validation:</strong> Regex validation for phone, email, pincode</li>
+        <li><strong>Rate Limiting:</strong> Prevents OTP spam and brute force attacks</li>
+        <li><strong>Audit Logging:</strong> Complete activity tracking for security monitoring</li>
+    </ul>
+
+    <p style="text-align: center; margin-top: 50px; color: #666;">
+        <strong>FreedmAI Microservices Platform</strong><br>
+        Complete API Documentation with Implementation Details<br>
+        Generated on September 19, 2025
+    </p>
+</body>
+</html>

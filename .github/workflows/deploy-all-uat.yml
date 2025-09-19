@@ -1,0 +1,114 @@
+name: Deploy All Microservices to UAT
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to deploy (comma-separated or "all")'
+        required: true
+        default: 'all'
+      image_tag:
+        description: 'Docker image tag to deploy'
+        required: true
+        default: 'latest'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-uat:
+    runs-on: self-hosted
+    environment: uat
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Set environment variables
+        run: |
+          echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ github.event.inputs.image_tag }}" >> $GITHUB_ENV
+          echo "JWT_SECRET=${{ secrets.JWT_SECRET }}" >> $GITHUB_ENV
+      
+      - name: Pull Docker images
+        run: |
+          services="${{ github.event.inputs.services }}"
+          if [ "$services" = "all" ]; then
+            services="api-gateway,auth-service,billing-service,payment-service,user-service,notification-service"
+          fi
+          
+          IFS=',' read -ra SERVICE_ARRAY <<< "$services"
+          for service in "${SERVICE_ARRAY[@]}"; do
+            echo "Pulling freedmai-$service:$IMAGE_TAG"
+            docker pull $ECR_REGISTRY/freedmai-$service:$IMAGE_TAG
+          done
+      
+      - name: Deploy to UAT
+        run: |
+          # Create log directories
+          mkdir -p logs/{api-gateway,auth-service,billing-service,payment-service,user-service,notification-service,nginx}
+          
+          # Stop existing containers
+          docker-compose -f docker-compose.uat.yml down || true
+          
+          # Start new containers
+          docker-compose -f docker-compose.uat.yml up -d
+          
+          # Wait for services
+          sleep 30
+      
+      - name: Health checks
+        run: |
+          services=("api-gateway:3000" "auth-service:3001" "billing-service:3002" "payment-service:3003" "user-service:3004" "notification-service:3005")
+          
+          for service in "${services[@]}"; do
+            service_name=$(echo $service | cut -d: -f1)
+            port=$(echo $service | cut -d: -f2)
+            
+            echo "Checking $service_name..."
+            if curl -f http://localhost:$port/health; then
+              echo "✅ $service_name is healthy"
+            else
+              echo "❌ $service_name health check failed"
+              exit 1
+            fi
+          done
+          
+          # Check Nginx
+          if curl -f http://localhost/health; then
+            echo "✅ Nginx is healthy"
+          else
+            echo "❌ Nginx health check failed"
+            exit 1
+          fi
+      
+      - name: Display deployment status
+        run: |
+          echo "📊 Running containers:"
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          
+          echo ""
+          echo "🌐 Service URLs:"
+          echo "API Gateway: http://localhost/"
+          echo "Auth Service: http://localhost/api/auth/"
+          echo "Billing Service: http://localhost/api/billing/"
+          echo "Payment Service: http://localhost/api/payment/"
+          echo "User Service: http://localhost/api/user/"
+          echo "Notification Service: http://localhost/api/notification/"
+      
+      - name: Notify deployment
+        if: always()
+        run: |
+          STATUS=${{ job.status }}
+          echo "UAT deployment $STATUS for services: ${{ github.event.inputs.services }}"
+          echo "Image tag: ${{ github.event.inputs.image_tag }}"

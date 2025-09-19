@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FreedmAI API Documentation</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8fafc; color: #334155; }
+        .header { background: white; border-bottom: 1px solid #e2e8f0; padding: 1rem 2rem; }
+        .logo { font-size: 1.5rem; font-weight: 700; color: #4f46e5; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        .hero { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 3rem 2rem; text-align: center; margin-bottom: 2rem; }
+        .hero h1 { font-size: 2.5rem; margin-bottom: 1rem; }
+        .hero p { font-size: 1.2rem; opacity: 0.9; }
+        .services-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem; margin-bottom: 3rem; }
+        .service-card { background: white; border-radius: 8px; padding: 2rem; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .service-card h3 { color: #4f46e5; margin-bottom: 1rem; }
+        .service-info { background: #f1f5f9; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+        .endpoint { background: #f8fafc; border-left: 4px solid #4f46e5; padding: 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+        .method { display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8rem; margin-right: 10px; }
+        .method.get { background: #10b981; color: white; }
+        .method.post { background: #3b82f6; color: white; }
+        .method.put { background: #f59e0b; color: white; }
+        .code { background: #1e293b; color: #e2e8f0; padding: 1rem; border-radius: 6px; overflow-x: auto; font-family: 'Courier New', monospace; margin: 1rem 0; }
+        .architecture { background: white; padding: 2rem; border-radius: 8px; margin-bottom: 2rem; }
+        .flow-diagram { text-align: center; margin: 2rem 0; }
+        .flow-step { display: inline-block; background: #4f46e5; color: white; padding: 10px 20px; border-radius: 25px; margin: 5px; }
+        .flow-step:not(:last-child)::after { content: '→'; margin-left: 15px; color: #4f46e5; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">FreedmAI API</div>
+    </div>
+
+    <div class="hero">
+        <h1>FreedmAI Microservices API</h1>
+        <p>Complete API Documentation for Microservices Architecture</p>
+        <p><strong>Version 2.0.0</strong> | Gateway: http://localhost:3000</p>
+    </div>
+
+    <div class="container">
+        <div class="architecture">
+            <h2>🏗️ Microservices Architecture</h2>
+            <div class="flow-diagram">
+                <div class="flow-step">Client</div>
+                <div class="flow-step">API Gateway (3000)</div>
+                <div class="flow-step">Microservice</div>
+                <div class="flow-step">Database</div>
+            </div>
+            <p>All requests go through the API Gateway which routes them to appropriate microservices.</p>
+        </div>
+
+        <div class="services-grid">
+            <div class="service-card">
+                <h3>🌐 API Gateway</h3>
+                <div class="service-info">
+                    <strong>Port:</strong> 3000<br>
+                    <strong>Role:</strong> Request routing and service discovery<br>
+                    <strong>Health:</strong> <a href="/health" target="_blank">GET /health</a>
+                </div>
+                <p>Central entry point that routes requests to appropriate microservices. Handles cross-cutting concerns like CORS and security headers.</p>
+            </div>
+
+            <div class="service-card">
+                <h3>👤 User Service</h3>
+                <div class="service-info">
+                    <strong>Port:</strong> 3001<br>
+                    <strong>Domain:</strong> User Management<br>
+                    <strong>Tables:</strong> users, identities, kyc_summary
+                </div>
+                <p>Manages user profiles, registration, and KYC verification processes.</p>
+            </div>
+
+            <div class="service-card">
+                <h3>🔐 OTP Service</h3>
+                <div class="service-info">
+                    <strong>Port:</strong> 3007<br>
+                    <strong>Domain:</strong> Authentication<br>
+                    <strong>Tables:</strong> otp_attempts, sessions
+                </div>
+                <p>Handles OTP generation, verification, JWT token management, and user sessions.</p>
+            </div>
+
+            <div class="service-card">
+                <h3>📱 Notification Service</h3>
+                <div class="service-info">
+                    <strong>Port:</strong> 3006<br>
+                    <strong>Domain:</strong> Communications<br>
+                    <strong>Tables:</strong> audit_logs
+                </div>
+                <p>Manages SMS, email, and push notifications with delivery tracking.</p>
+            </div>
+        </div>
+
+        <h2>🔌 API Endpoints</h2>
+
+        <div class="endpoint">
+            <h3><span class="method post">POST</span> /api/auth/send-otp</h3>
+            <p><strong>Service:</strong> OTP Service | <strong>Purpose:</strong> Send OTP to phone number</p>
+            <div class="code">
+// Request
+{
+  "phone_number": "+919876543210",
+  "purpose": "registration"
+}
+
+// Response
+{
+  "success": true,
+  "data": {
+    "verification_id": "uuid-verification-id",
+    "expires_at": "2025-09-19T10:35:00Z",
+    "otp_length": 6,
+    "retry_after": 60
+  },
+  "message": "OTP sent successfully"
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h3><span class="method post">POST</span> /api/auth/verify-otp</h3>
+            <p><strong>Service:</strong> OTP Service | <strong>Purpose:</strong> Verify OTP and login user</p>
+            <div class="code">
+// Request
+{
+  "phone_number": "+919876543210",
+  "otp": "123456",
+  "verification_id": "uuid-verification-id"
+}
+
+// Response
+{
+  "success": true,
+  "data": {
+    "access_token": "jwt-access-token",
+    "refresh_token": "jwt-refresh-token",
+    "user": {
+      "id": 12345,
+      "phone": "+919876543210",
+      "status": "onboarding"
+    }
+  },
+  "message": "OTP verified successfully"
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h3><span class="method post">POST</span> /api/auth/refresh</h3>
+            <p><strong>Service:</strong> OTP Service | <strong>Purpose:</strong> Refresh access token</p>
+            <div class="code">
+// Request
+{
+  "refresh_token": "jwt-refresh-token"
+}
+
+// Response
+{
+  "success": true,
+  "data": {
+    "access_token": "new-jwt-access-token",
+    "expires_in": 900
+  },
+  "message": "Token refreshed successfully"
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h3><span class="method post">POST</span> /api/users/register</h3>
+            <p><strong>Service:</strong> User Service | <strong>Purpose:</strong> Complete user registration</p>
+            <div class="code">
+// Request Headers
+Authorization: Bearer jwt-access-token
+
+// Request Body
+{
+  "full_name": "John Doe",
+  "email": "john@example.com",
+  "dob": "1990-01-15",
+  "pincode": "110001"
+}
+
+// Response
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": 12345,
+      "phone": "+919876543210",
+      "email": "john@example.com",
+      "full_name": "John Doe",
+      "status": "active"
+    }
+  },
+  "message": "User registered successfully"
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h3><span class="method get">GET</span> /api/users/profile</h3>
+            <p><strong>Service:</strong> User Service | <strong>Purpose:</strong> Get user profile</p>
+            <div class="code">
+// Request Headers
+Authorization: Bearer jwt-access-token
+
+// Response
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": 12345,
+      "phone": "+919876543210",
+      "email": "john@example.com",
+      "full_name": "John Doe",
+      "status": "active",
+      "kyc_status": "pending",
+      "verification_level": "basic"
+    }
+  },
+  "message": "Profile retrieved successfully"
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h3><span class="method put">PUT</span> /api/users/profile</h3>
+            <p><strong>Service:</strong> User Service | <strong>Purpose:</strong> Update user profile</p>
+            <div class="code">
+// Request Headers
+Authorization: Bearer jwt-access-token
+
+// Request Body
+{
+  "full_name": "John Updated",
+  "email": "john.updated@example.com"
+}
+
+// Response
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": 12345,
+      "full_name": "John Updated",
+      "email": "john.updated@example.com"
+    }
+  },
+  "message": "Profile updated successfully"
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h3><span class="method post">POST</span> /api/notifications/sms</h3>
+            <p><strong>Service:</strong> Notification Service | <strong>Purpose:</strong> Send SMS notification</p>
+            <div class="code">
+// Request
+{
+  "mobile_number": "+919876543210",
+  "template_type": "welcome",
+  "variables": {
+    "name": "John Doe"
+  }
+}
+
+// Response
+{
+  "success": true,
+  "data": {
+    "message_id": "sms-message-id",
+    "status": "sent",
+    "mobile_number": "+919876543210"
+  },
+  "message": "SMS sent successfully"
+}
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <h3><span class="method get">GET</span> /health</h3>
+            <p><strong>Service:</strong> API Gateway | <strong>Purpose:</strong> System health check</p>
+            <div class="code">
+// Response
+{
+  "status": "UP",
+  "service": "FreedmAI API Gateway",
+  "timestamp": "2025-09-19T10:30:00Z",
+  "version": "1.0.0",
+  "services": {
+    "user_service": { "status": "UP", "url": "http://localhost:3001" },
+    "otp_service": { "status": "UP", "url": "http://localhost:3007" },
+    "notification_service": { "status": "UP", "url": "http://localhost:3006" }
+  }
+}
+            </div>
+        </div>
+
+        <div style="background: white; padding: 2rem; border-radius: 8px; margin-top: 3rem;">
+            <h2>🔒 Authentication</h2>
+            <p>All protected endpoints require a valid JWT access token in the Authorization header:</p>
+            <div class="code">Authorization: Bearer your-jwt-access-token</div>
+            
+            <h3>Token Lifecycle</h3>
+            <ul style="margin: 1rem 0; padding-left: 2rem;">
+                <li><strong>Access Token:</strong> 15 minutes expiry</li>
+                <li><strong>Refresh Token:</strong> 30 days expiry</li>
+                <li><strong>OTP:</strong> 5 minutes expiry, max 3 requests per 5 minutes</li>
+            </ul>
+
+            <h3>Error Codes</h3>
+            <ul style="margin: 1rem 0; padding-left: 2rem;">
+                <li><strong>400:</strong> Validation Error</li>
+                <li><strong>401:</strong> Unauthorized (Invalid/Expired Token)</li>
+                <li><strong>429:</strong> Rate Limit Exceeded</li>
+                <li><strong>500:</strong> Internal Server Error</li>
+            </ul>
+        </div>
+
+        <div style="text-align: center; margin-top: 3rem; padding: 2rem; background: white; border-radius: 8px;">
+            <h2>📞 Support</h2>
+            <p><strong>API Gateway:</strong> <a href="http://localhost:3000">http://localhost:3000</a></p>
+            <p><strong>Health Check:</strong> <a href="/health" target="_blank">GET /health</a></p>
+            <p><strong>Documentation:</strong> <a href="/api-docs" target="_blank">GET /api-docs</a></p>
+            <p style="margin-top: 1rem; color: #64748b;">FreedmAI Microservices Platform v2.0.0</p>
+        </div>
+    </div>
+</body>
+</html>

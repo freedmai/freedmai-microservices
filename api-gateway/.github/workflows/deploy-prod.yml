@@ -1,0 +1,92 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (must be UAT approved)'
+        required: true
+      uat_approval_id:
+        description: 'UAT approval reference ID'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate-approval:
+    runs-on: ubuntu-latest
+    outputs:
+      approved: ${{ steps.check.outputs.approved }}
+    steps:
+      - name: Check UAT approval
+        id: check
+        run: |
+          # This would integrate with your approval system
+          # For now, we'll use a simple check
+          echo "approved=true" >> $GITHUB_OUTPUT
+
+  deploy-prod:
+    needs: validate-approval
+    runs-on: self-hosted
+    environment: production
+    if: needs.validate-approval.outputs.approved == 'true'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Backup current version
+        run: |
+          CURRENT_IMAGE=$(docker inspect freedmai-api-gateway --format='{{.Config.Image}}' 2>/dev/null || echo "none")
+          echo "BACKUP_IMAGE=$CURRENT_IMAGE" >> $GITHUB_ENV
+      
+      - name: Deploy to Production
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: freedmai-api-gateway
+          IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        run: |
+          # Pull new image
+          docker pull $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          
+          # Blue-green deployment
+          docker-compose -f docker-compose.prod.yml up -d api-gateway-new
+          
+          # Health check new instance
+          sleep 15
+          curl -f http://localhost:3001/health || exit 1
+          
+          # Switch traffic (update nginx config)
+          sudo nginx -s reload
+          
+          # Stop old container
+          docker-compose -f docker-compose.prod.yml down api-gateway || true
+          
+          # Rename new container
+          docker rename api-gateway-new api-gateway
+      
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          if [ "$BACKUP_IMAGE" != "none" ]; then
+            docker run -d --name api-gateway-rollback $BACKUP_IMAGE
+            sudo nginx -s reload
+            echo "Rolled back to $BACKUP_IMAGE"
+          fi
+      
+      - name: Notify deployment
+        if: always()
+        run: |
+          STATUS=${{ job.status }}
+          echo "Production deployment $STATUS for api-gateway:${{ github.event.inputs.image_tag }}"

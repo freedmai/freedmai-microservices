@@ -1,0 +1,59 @@
+name: Deploy to UAT
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy'
+        required: true
+        default: 'latest'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-uat:
+    runs-on: self-hosted
+    environment: uat
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Deploy to UAT
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: freedmai-api-gateway
+          IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        run: |
+          # Pull latest image
+          docker pull $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          
+          # Stop existing container
+          docker-compose -f docker-compose.uat.yml down api-gateway || true
+          
+          # Update image tag in compose file
+          sed -i "s|image: .*|image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|" docker-compose.uat.yml
+          
+          # Start new container
+          docker-compose -f docker-compose.uat.yml up -d api-gateway
+          
+          # Health check
+          sleep 10
+          curl -f http://localhost:3000/health || exit 1
+      
+      - name: Notify deployment
+        if: always()
+        run: |
+          STATUS=${{ job.status }}
+          echo "UAT deployment $STATUS for api-gateway:${{ github.event.inputs.image_tag }}"

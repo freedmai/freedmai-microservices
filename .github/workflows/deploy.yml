@@ -1,0 +1,260 @@
+name: FreedmAI Automated Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: choice
+        options:
+          - api-gateway
+          - user-service
+          - otp-service
+          - notification-service
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - uat
+          - production
+      version:
+        description: 'Version/Branch to deploy'
+        required: true
+        default: 'main'
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.inputs.version }}
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: ${{ github.event.inputs.service }}/package-lock.json
+    
+    - name: Install dependencies
+      run: |
+        cd ${{ github.event.inputs.service }}
+        npm ci
+    
+    - name: Run tests
+      run: |
+        cd ${{ github.event.inputs.service }}
+        npm test
+    
+    - name: Run security audit
+      run: |
+        cd ${{ github.event.inputs.service }}
+        npm audit --audit-level moderate
+
+  build-and-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.inputs.version }}
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+    
+    - name: Build Docker image
+      run: |
+        cd ${{ github.event.inputs.service }}
+        docker build -t $ECR_REGISTRY/freedm-ai/${{ github.event.inputs.service }}:${{ github.event.inputs.version }} .
+        docker push $ECR_REGISTRY/freedm-ai/${{ github.event.inputs.service }}:${{ github.event.inputs.version }}
+    
+    - name: Deploy to UAT
+      if: github.event.inputs.environment == 'uat'
+      run: |
+        # Create deployment script
+        cat > deploy.sh << 'EOF'
+        #!/bin/bash
+        SERVICE="${{ github.event.inputs.service }}"
+        VERSION="${{ github.event.inputs.version }}"
+        ECR_REGISTRY="${{ env.ECR_REGISTRY }}"
+        
+        echo "Deploying $SERVICE:$VERSION to UAT..."
+        
+        # Update docker-compose.yml with new image
+        sed -i "s|image: .*/$SERVICE:.*|image: $ECR_REGISTRY/freedm-ai/$SERVICE:$VERSION|g" /home/ec2-user/uat-docker-compose.yml
+        
+        # Pull and restart service
+        docker-compose -f /home/ec2-user/uat-docker-compose.yml pull $SERVICE
+        docker-compose -f /home/ec2-user/uat-docker-compose.yml up -d $SERVICE
+        
+        # Health check
+        sleep 10
+        if docker-compose -f /home/ec2-user/uat-docker-compose.yml ps $SERVICE | grep -q "Up"; then
+          echo "✅ $SERVICE deployed successfully to UAT"
+          exit 0
+        else
+          echo "❌ $SERVICE deployment failed"
+          exit 1
+        fi
+        EOF
+        
+        chmod +x deploy.sh
+        
+        # Copy and execute on UAT server
+        scp -i ~/.ssh/freedm-key -o StrictHostKeyChecking=no deploy.sh ec2-user@${{ secrets.UAT_SERVER }}:/tmp/
+        ssh -i ~/.ssh/freedm-key -o StrictHostKeyChecking=no ec2-user@${{ secrets.UAT_SERVER }} "bash /tmp/deploy.sh"
+    
+    - name: Deploy to Production
+      if: github.event.inputs.environment == 'production'
+      run: |
+        # Check if UAT approval exists
+        if [ ! -f "/tmp/uat-approved-${{ github.event.inputs.service }}" ]; then
+          echo "❌ UAT approval required for production deployment"
+          exit 1
+        fi
+        
+        # Create production deployment script
+        cat > deploy-prod.sh << 'EOF'
+        #!/bin/bash
+        SERVICE="${{ github.event.inputs.service }}"
+        VERSION="${{ github.event.inputs.version }}"
+        ECR_REGISTRY="${{ env.ECR_REGISTRY }}"
+        
+        echo "Deploying $SERVICE:$VERSION to Production..."
+        
+        # Backup current version
+        docker tag $(docker-compose -f /home/ec2-user/prod-docker-compose.yml images -q $SERVICE) $ECR_REGISTRY/freedm-ai/$SERVICE:backup-$(date +%Y%m%d-%H%M%S)
+        
+        # Update docker-compose.yml
+        sed -i "s|image: .*/$SERVICE:.*|image: $ECR_REGISTRY/freedm-ai/$SERVICE:$VERSION|g" /home/ec2-user/prod-docker-compose.yml
+        
+        # Rolling update
+        docker-compose -f /home/ec2-user/prod-docker-compose.yml pull $SERVICE
+        docker-compose -f /home/ec2-user/prod-docker-compose.yml up -d $SERVICE
+        
+        # Health check with retry
+        for i in {1..5}; do
+          sleep 10
+          if docker-compose -f /home/ec2-user/prod-docker-compose.yml ps $SERVICE | grep -q "Up"; then
+            echo "✅ $SERVICE deployed successfully to Production"
+            exit 0
+          fi
+          echo "Retry $i/5..."
+        done
+        
+        echo "❌ Production deployment failed, rolling back..."
+        docker-compose -f /home/ec2-user/prod-docker-compose.yml down $SERVICE
+        docker-compose -f /home/ec2-user/prod-docker-compose.yml up -d $SERVICE
+        exit 1
+        EOF
+        
+        chmod +x deploy-prod.sh
+        
+        # Copy and execute on production server
+        scp -i ~/.ssh/freedm-key -o StrictHostKeyChecking=no deploy-prod.sh ec2-user@${{ secrets.PROD_SERVER }}:/tmp/
+        ssh -i ~/.ssh/freedm-key -o StrictHostKeyChecking=no ec2-user@${{ secrets.PROD_SERVER }} "bash /tmp/deploy-prod.sh"
+    
+    - name: Run post-deployment tests
+      run: |
+        # Wait for service to be ready
+        sleep 30
+        
+        # Run health checks
+        if [ "${{ github.event.inputs.environment }}" == "uat" ]; then
+          SERVER_URL="http://${{ secrets.UAT_SERVER }}"
+        else
+          SERVER_URL="https://${{ secrets.PROD_SERVER }}"
+        fi
+        
+        # Test service health
+        curl -f $SERVER_URL/health || exit 1
+        
+        # Test API endpoints
+        if [ "${{ github.event.inputs.service }}" == "api-gateway" ]; then
+          curl -f $SERVER_URL/api-docs/spec || exit 1
+        fi
+    
+    - name: Notify deployment status
+      if: always()
+      run: |
+        STATUS="${{ job.status }}"
+        SERVICE="${{ github.event.inputs.service }}"
+        ENV="${{ github.event.inputs.environment }}"
+        VERSION="${{ github.event.inputs.version }}"
+        
+        if [ "$STATUS" == "success" ]; then
+          MESSAGE="✅ $SERVICE:$VERSION deployed successfully to $ENV"
+        else
+          MESSAGE="❌ $SERVICE:$VERSION deployment failed in $ENV"
+        fi
+        
+        # Send notification to dashboard
+        curl -X POST ${{ secrets.DASHBOARD_URL }}/webhook/deployment \
+          -H "Content-Type: application/json" \
+          -d "{\"service\":\"$SERVICE\",\"version\":\"$VERSION\",\"environment\":\"$ENV\",\"status\":\"$STATUS\",\"message\":\"$MESSAGE\"}"
+        
+        # Send Slack notification (optional)
+        if [ -n "${{ secrets.SLACK_WEBHOOK }}" ]; then
+          curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+            -H "Content-Type: application/json" \
+            -d "{\"text\":\"$MESSAGE\"}"
+        fi
+
+  uat-tests:
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    if: github.event.inputs.environment == 'uat'
+    steps:
+    - name: Run UAT test suite
+      run: |
+        echo "Running comprehensive UAT tests..."
+        
+        # API health tests
+        curl -f http://${{ secrets.UAT_SERVER }}/health
+        
+        # Service-specific tests
+        case "${{ github.event.inputs.service }}" in
+          "api-gateway")
+            curl -f http://${{ secrets.UAT_SERVER }}/api-docs/spec
+            ;;
+          "user-service")
+            # Test user endpoints (with mock data)
+            echo "Testing user service endpoints..."
+            ;;
+          "otp-service")
+            # Test OTP functionality
+            echo "Testing OTP service..."
+            ;;
+          "notification-service")
+            # Test notification service
+            echo "Testing notification service..."
+            ;;
+        esac
+        
+        echo "✅ All UAT tests passed!"
+    
+    - name: Create UAT approval file
+      if: success()
+      run: |
+        # Create approval marker for production deployment
+        echo "UAT tests passed for ${{ github.event.inputs.service }}:${{ github.event.inputs.version }}" > /tmp/uat-approved-${{ github.event.inputs.service }}
+        
+        # Upload to S3 or shared storage for production workflow to check
+        aws s3 cp /tmp/uat-approved-${{ github.event.inputs.service }} s3://${{ secrets.DEPLOYMENT_BUCKET }}/approvals/

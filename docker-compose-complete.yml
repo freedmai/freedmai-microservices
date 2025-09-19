@@ -9,7 +9,7 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=uat
-      - JWT_SECRET=uat-jwt-secret-key-2025
+      - JWT_SECRET=${JWT_SECRET:-secure-default-key}
     volumes:
       - ./logs/api-gateway:/app/logs
     restart: unless-stopped
@@ -35,7 +35,7 @@ services:
       - "3001:3001"
     environment:
       - NODE_ENV=uat
-      - JWT_SECRET=uat-jwt-secret-key-2025
+      - JWT_SECRET=${JWT_SECRET:-secure-default-key}
     volumes:
       - ./logs/auth-service:/app/logs
     restart: unless-stopped

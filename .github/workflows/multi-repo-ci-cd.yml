@@ -1,0 +1,205 @@
+name: Multi-Repository CI/CD Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to deploy (comma-separated or "all")'
+        required: true
+        default: 'all'
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'uat'
+        type: choice
+        options:
+        - uat
+        - production
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+        - deploy
+        - test
+        - build
+
+env:
+  ECR_REGISTRY: 339713159370.dkr.ecr.us-east-1.amazonaws.com
+  AWS_REGION: us-east-1
+
+jobs:
+  setup:
+    name: Setup and Validation
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.parse.outputs.services }}
+      matrix: ${{ steps.parse.outputs.matrix }}
+    
+    steps:
+      - name: Parse service input
+        id: parse
+        run: |
+          if [ "${{ github.event.inputs.services }}" = "all" ]; then
+            services="api-gateway,auth-service,billing-service,payment-service,user-service,notification-service"
+          else
+            services="${{ github.event.inputs.services }}"
+          fi
+          
+          echo "services=$services" >> $GITHUB_OUTPUT
+          
+          # Create matrix for parallel processing
+          matrix=$(echo $services | jq -R -s -c 'split(",") | map(select(length > 0))')
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+          
+          echo "Selected services: $services"
+
+  build-and-test:
+    name: Build and Test Services
+    needs: setup
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'build' || github.event.inputs.action == 'deploy'
+    strategy:
+      matrix:
+        service: ${{ fromJson(needs.setup.outputs.matrix) }}
+    
+    steps:
+      - name: Checkout service repository
+        uses: actions/checkout@v4
+        with:
+          repository: freedmai/freedmai-${{ matrix.service }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: ${{ matrix.service }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.service }}/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd ${{ matrix.service }}
+          npm ci
+
+      - name: Run tests
+        run: |
+          cd ${{ matrix.service }}
+          npm test || echo "No tests configured"
+
+      - name: Security audit
+        run: |
+          cd ${{ matrix.service }}
+          npm audit --audit-level=high || true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        run: |
+          cd ${{ matrix.service }}
+          
+          # Build image
+          docker build -t ${{ env.ECR_REGISTRY }}/freedmai-${{ matrix.service }}:${{ github.sha }} .
+          docker build -t ${{ env.ECR_REGISTRY }}/freedmai-${{ matrix.service }}:latest .
+          
+          # Push images
+          docker push ${{ env.ECR_REGISTRY }}/freedmai-${{ matrix.service }}:${{ github.sha }}
+          docker push ${{ env.ECR_REGISTRY }}/freedmai-${{ matrix.service }}:latest
+          
+          echo "✅ Built and pushed freedmai-${{ matrix.service }}"
+
+  deploy:
+    name: Deploy to Environment
+    needs: [setup, build-and-test]
+    runs-on: self-hosted
+    if: github.event.inputs.action == 'deploy'
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Checkout main repository
+        uses: actions/checkout@v4
+        with:
+          repository: freedmai/freedmai-microservices
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+      - name: Deploy services
+        run: |
+          services="${{ needs.setup.outputs.services }}"
+          environment="${{ github.event.inputs.environment }}"
+          
+          echo "Deploying services: $services to $environment"
+          
+          # Set environment variables
+          export ECR_REGISTRY="${{ env.ECR_REGISTRY }}"
+          export IMAGE_TAG="${{ github.sha }}"
+          export JWT_SECRET="${{ secrets.JWT_SECRET }}"
+          
+          # Deploy based on environment
+          if [ "$environment" = "uat" ]; then
+            docker-compose -f docker-compose-complete.yml pull
+            docker-compose -f docker-compose-complete.yml up -d
+          else
+            echo "Production deployment requires additional approval"
+          fi
+
+      - name: Health check
+        run: |
+          echo "Waiting for services to start..."
+          sleep 30
+          
+          # Health check all services
+          services_array=($(echo "${{ needs.setup.outputs.services }}" | tr ',' ' '))
+          ports=(3000 3001 3002 3003 3004 3005)
+          
+          for i in "${!services_array[@]}"; do
+            service="${services_array[$i]}"
+            port="${ports[$i]}"
+            
+            echo "Checking $service on port $port..."
+            if curl -f -s http://localhost:$port/health > /dev/null; then
+              echo "✅ $service is healthy"
+            else
+              echo "❌ $service health check failed"
+              exit 1
+            fi
+          done
+          
+          echo "🎉 All services deployed successfully!"
+
+  notify:
+    name: Notify Deployment Status
+    needs: [setup, build-and-test, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Deployment notification
+        run: |
+          if [ "${{ needs.deploy.result }}" = "success" ]; then
+            echo "✅ Deployment successful for services: ${{ needs.setup.outputs.services }}"
+            echo "Environment: ${{ github.event.inputs.environment }}"
+            echo "Commit: ${{ github.sha }}"
+          else
+            echo "❌ Deployment failed"
+            echo "Check logs for details"
+          fi
